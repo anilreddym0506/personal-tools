@@ -197,10 +197,21 @@
             <div>
                 <h3 class="mb-0"><i class="bi bi-shield-lock"></i> Password Manager</h3>
             </div>
-            <button class="btn btn-danger" id="logoutBtn">
-                <i class="bi bi-box-arrow-right"></i> Lock
-            </button>
+            <div class="d-flex gap-2">
+                <button class="btn btn-outline-primary" id="exportBtn">
+                    <i class="bi bi-download"></i> Export
+                </button>
+                <button class="btn btn-outline-success" id="importBtn">
+                    <i class="bi bi-upload"></i> Import
+                </button>
+                <button class="btn btn-danger" id="logoutBtn">
+                    <i class="bi bi-box-arrow-right"></i> Lock
+                </button>
+            </div>
         </div>
+        
+        <!-- Hidden file input for import -->
+        <input type="file" id="importFileInput" accept=".json" style="display: none;">
 
         <div class="content-card">
             <!-- Navigation Tabs -->
@@ -402,6 +413,11 @@
                 
                 // Search
                 document.getElementById('searchInput').addEventListener('input', (e) => this.filterPasswords(e.target.value));
+                
+                // Export/Import
+                document.getElementById('exportBtn').addEventListener('click', () => this.exportData());
+                document.getElementById('importBtn').addEventListener('click', () => this.triggerImport());
+                document.getElementById('importFileInput').addEventListener('change', (e) => this.handleImport(e));
                 
                 // Logout
                 document.getElementById('logoutBtn').addEventListener('click', () => this.logout());
@@ -721,6 +737,125 @@
                         button.classList.add('btn-outline-secondary');
                     }, 2000);
                 });
+            }
+
+            exportData() {
+                try {
+                    // Get encrypted data from localStorage
+                    const encryptedData = localStorage.getItem('passwordManagerData');
+                    
+                    if (!encryptedData) {
+                        alert('No data to export. Please add some passwords first.');
+                        return;
+                    }
+
+                    // Create a blob with the encrypted data
+                    const blob = new Blob([encryptedData], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    
+                    // Create download link
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `password-manager-backup-${new Date().toISOString().split('T')[0]}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                    
+                    this.showToast('Data exported successfully! Keep this file safe.');
+                } catch (error) {
+                    alert('Export failed: ' + error.message);
+                }
+            }
+
+            triggerImport() {
+                document.getElementById('importFileInput').click();
+            }
+
+            async handleImport(event) {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                try {
+                    const reader = new FileReader();
+                    
+                    reader.onload = async (e) => {
+                        try {
+                            const importedData = e.target.result;
+                            
+                            // Validate JSON format
+                            const parsed = JSON.parse(importedData);
+                            if (!parsed.salt || !parsed.iv || !parsed.data) {
+                                throw new Error('Invalid backup file format');
+                            }
+
+                            // Ask user if they want to merge or replace
+                            const currentData = localStorage.getItem('passwordManagerData');
+                            let shouldProceed = true;
+                            
+                            if (currentData) {
+                                shouldProceed = confirm(
+                                    'You have existing passwords. Do you want to:\n\n' +
+                                    'OK = MERGE imported data with existing data (recommended)\n' +
+                                    'Cancel = Abort import'
+                                );
+                            }
+
+                            if (!shouldProceed) {
+                                this.showToast('Import cancelled');
+                                event.target.value = ''; // Reset file input
+                                return;
+                            }
+
+                            // Try to decrypt imported data with current master password
+                            try {
+                                const importedPasswords = await this.crypto.decrypt(parsed, this.masterPassword);
+                                
+                                if (currentData) {
+                                    // Merge: combine existing and imported passwords
+                                    const existingIds = new Set(this.passwords.map(p => p.id));
+                                    const newPasswords = importedPasswords.filter(p => !existingIds.has(p.id));
+                                    
+                                    this.passwords = [...this.passwords, ...newPasswords];
+                                    
+                                    // Save merged data
+                                    await this.saveToStorage();
+                                    
+                                    this.showToast(`Import successful! Added ${newPasswords.length} new passwords. ${importedPasswords.length - newPasswords.length} duplicates skipped.`);
+                                } else {
+                                    // No existing data, just import
+                                    this.passwords = importedPasswords;
+                                    await this.saveToStorage();
+                                    
+                                    this.showToast(`Import successful! Imported ${importedPasswords.length} passwords.`);
+                                }
+                                
+                                // Refresh the view
+                                this.renderPasswordList();
+                                
+                            } catch (decryptError) {
+                                alert('Import failed: The backup file was created with a different master password. Please use the correct master password.');
+                            }
+                            
+                        } catch (parseError) {
+                            alert('Import failed: Invalid or corrupted backup file.');
+                        }
+                        
+                        // Reset file input
+                        event.target.value = '';
+                    };
+                    
+                    reader.onerror = () => {
+                        alert('Failed to read file');
+                        event.target.value = '';
+                    };
+                    
+                    reader.readAsText(file);
+                    
+                } catch (error) {
+                    alert('Import failed: ' + error.message);
+                    event.target.value = '';
+                }
             }
 
             showToast(message) {
